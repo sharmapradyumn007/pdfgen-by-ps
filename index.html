@@ -135,7 +135,6 @@
     <div class="result-box" id="result-box">
       <div class="check">✅</div>
       <p id="result-msg"></p>
-      <button class="dl-btn" id="dl-btn">⬇ Download ZIP</button>
     </div>
 
   </div>
@@ -408,43 +407,76 @@ function generatePDF(row) {
   return doc;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const BATCH_SIZE = 200; // PDFs per ZIP file — safe memory limit per batch
+
+function triggerDownload(blob, filename) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+
+function setProgress(done, total, label) {
+  const pct = Math.round((done / total) * 100);
+  document.getElementById('progress-bar').style.width = pct + '%';
+  document.getElementById('progress-count').textContent = label;
+}
+
 // ── Generate button ──────────────────────────────────────────────────────────
 document.getElementById('gen-btn').addEventListener('click', async () => {
   if (!csvData) return;
-  // wait for SVG→PNG conversion if still in progress
   while (!logo1DataUrl) await new Promise(r => setTimeout(r, 50));
+
+  const total = csvData.length;
+  const totalBatches = Math.ceil(total / BATCH_SIZE);
+
   document.getElementById('progress-wrap').style.display = 'block';
   document.getElementById('result-box').style.display = 'none';
   document.getElementById('gen-btn').disabled = true;
 
-  const zip = new JSZip();
-  const total = csvData.length;
+  let globalDone = 0;
 
-  for (let i = 0; i < total; i++) {
-    const row = csvData[i];
-    const serial = (row.DUTSerial || `module_${i+1}`).replace(/[\/\\ ]/g, '_');
-    const doc = generatePDF(row);
-    const pdfBytes = doc.output('arraybuffer');
-    zip.file(`${serial}.pdf`, pdfBytes);
+  for (let b = 0; b < totalBatches; b++) {
+    const start = b * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, total);
+    const batchRows = csvData.slice(start, end);
+    const zip = new JSZip();
 
-    const pct = Math.round(((i + 1) / total) * 100);
-    document.getElementById('progress-bar').style.width = pct + '%';
-    document.getElementById('progress-count').textContent = `${i + 1} / ${total}`;
-    await new Promise(r => setTimeout(r, 0)); // let UI breathe
+    for (let j = 0; j < batchRows.length; j++) {
+      const row = batchRows[j];
+      const serial = (row.DUTSerial || `module_${start + j + 1}`).replace(/[\/\\ ]/g, '_');
+      const doc = generatePDF(row);
+      zip.file(`${serial}.pdf`, doc.output('arraybuffer'));
+
+      globalDone++;
+      setProgress(globalDone, total,
+        totalBatches > 1
+          ? `${globalDone} / ${total} — batch ${b + 1} of ${totalBatches}`
+          : `${globalDone} / ${total}`
+      );
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const zipName = totalBatches > 1
+      ? `solar_iv_reports_part${b + 1}_of_${totalBatches}.zip`
+      : 'solar_iv_reports.zip';
+
+    triggerDownload(zipBlob, zipName);
+
+    // let browser GC the zip before next batch
+    await new Promise(r => setTimeout(r, 300));
   }
 
-  zipBlob = await zip.generateAsync({ type: 'blob' });
-  document.getElementById('result-msg').textContent = `${total} PDF${total > 1 ? 's' : ''} ready in ZIP`;
+  document.getElementById('result-msg').textContent =
+    totalBatches > 1
+      ? `${total} PDFs done — downloaded in ${totalBatches} ZIP files`
+      : `${total} PDF${total > 1 ? 's' : ''} ready — ZIP downloaded`;
   document.getElementById('result-box').style.display = 'block';
   document.getElementById('gen-btn').disabled = false;
-});
-
-document.getElementById('dl-btn').addEventListener('click', () => {
-  if (!zipBlob) return;
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(zipBlob);
-  a.download = 'solar_iv_reports.zip';
-  a.click();
 });
 </script>
 </body>
