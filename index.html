@@ -116,7 +116,7 @@
     <div class="upload-row">
 
       <div class="upload-box" id="box-csv">
-        <input type="file" accept=".csv" id="inp-csv"/>
+        <input type="file" accept=".csv,.CSV,.txt" id="inp-csv"/>
         <div class="icon">📄</div>
         <div class="label">Click to upload <strong>CSV data file</strong></div>
         <div class="filename" id="name-csv"></div>
@@ -195,17 +195,43 @@ document.getElementById('inp-csv').addEventListener('change', async e => {
 
 
 // ── IV Curve ─────────────────────────────────────────────────────────────────
-function generateIV(Isc, Voc, Imp, Vmp, Rsh, n = 300) {
+function sanitize(v, fallback) {
+  const n = parseFloat(v);
+  return (isFinite(n) && !isNaN(n)) ? n : fallback;
+}
+
+function generateIV(IscRaw, VocRaw, ImpRaw, VmpRaw, RshRaw, n = 300) {
+  const Isc = Math.max(sanitize(IscRaw, 0), 0);
+  const Voc = Math.max(sanitize(VocRaw, 0), 0);
+  const Imp = Math.max(sanitize(ImpRaw, 0), 0);
+  const Vmp = Math.max(sanitize(VmpRaw, 0), 0);
+  const Rsh = Math.max(sanitize(RshRaw, 1000), 0.001);
+
+  // degenerate module — return flat zero curve
+  if (Isc <= 0 || Voc <= 0) {
+    const V = Array.from({length: n}, (_, i) => (i / (n-1)));
+    return { V, I: V.map(() => 0), P: V.map(() => 0) };
+  }
+
   const Isceff = Math.max(Isc - Voc / Rsh, Isc * 0.99);
-  const ratio = Math.min(Math.max(1.0 - Imp / Isceff, 1e-9), 1 - 1e-9);
-  const nVt = (Vmp - Voc) / Math.log(ratio);
+  const ratio = Math.min(Math.max(1.0 - Imp / Math.max(Isceff, 1e-9), 1e-9), 1 - 1e-9);
+  const logR = Math.log(ratio);
+  const nVt = (logR === 0) ? 1e-9 : (Vmp - Voc) / logR;
   const V = [], I = [], P = [];
   for (let i = 0; i < n; i++) {
     const v = (Voc * i) / (n - 1);
-    const cur = Math.max(0, Math.min(Isc, Isceff * (1 - Math.exp((v - Voc) / nVt))));
+    const expVal = (v - Voc) / nVt;
+    const cur = isFinite(expVal)
+      ? Math.max(0, Math.min(Isc, Isceff * (1 - Math.exp(expVal))))
+      : (i === 0 ? Isc : 0);
     V.push(v); I.push(cur); P.push(v * cur);
   }
   return { V, I, P };
+}
+
+function fmt(v) {
+  const n = parseFloat(v);
+  return (isFinite(n) && !isNaN(n)) ? n.toFixed(3) : String(v ?? '—');
 }
 
 // ── Draw one PDF page ────────────────────────────────────────────────────────
@@ -270,19 +296,19 @@ function generatePDF(row) {
   const params = [
     ['Date and Time',   row['Date Time'] || ''],
     ['DUTSerial',       row['DUTSerial'] || ''],
-    ['Isc[A]',          parseFloat(row['Isc [A]']).toFixed(3)],
-    ['Voc[V]',          parseFloat(row['Voc [V]']).toFixed(3)],
-    ['PMax [W]',        parseFloat(row['PMax [W]']).toFixed(3)],
-    ['Imp [A]',         parseFloat(row['Imp [A]']).toFixed(3)],
-    ['Vmp [V]',         parseFloat(row['Vmp [V]']).toFixed(3)],
-    ['Rshunt [ohm]',    parseFloat(row['Rshunt [ohm]']).toFixed(3)],
-    ['Rser [ohm]',      parseFloat(row['Rser [ohm]']).toFixed(3)],
-    ['FF [%]',          parseFloat(row['FF [%]']).toFixed(3)],
-    ['Efficiency [%]',  parseFloat(row['Efficiency [%]']).toFixed(3)],
-    ['DUT T. [°C]',     parseFloat(row[dutTKey]).toFixed(3)],
-    ['Ambient T. [°C]', parseFloat(row[ambTKey]).toFixed(3)],
-    ['Monitor T. [°C]', parseFloat(row[monTKey]).toFixed(3)],
-    ['Avg Irr. [W/m2]', parseFloat(row['Avg Irr. [W/m2]']).toFixed(3)],
+    ['Isc[A]',          fmt(row['Isc [A]'])],
+    ['Voc[V]',          fmt(row['Voc [V]'])],
+    ['PMax [W]',        fmt(row['PMax [W]'])],
+    ['Imp [A]',         fmt(row['Imp [A]'])],
+    ['Vmp [V]',         fmt(row['Vmp [V]'])],
+    ['Rshunt [ohm]',    fmt(row['Rshunt [ohm]'])],
+    ['Rser [ohm]',      fmt(row['Rser [ohm]'])],
+    ['FF [%]',          fmt(row['FF [%]'])],
+    ['Efficiency [%]',  fmt(row['Efficiency [%]'])],
+    ['DUT T. [°C]',     fmt(row[dutTKey])],
+    ['Ambient T. [°C]', fmt(row[ambTKey])],
+    ['Monitor T. [°C]', fmt(row[monTKey])],
+    ['Avg Irr. [W/m2]', fmt(row['Avg Irr. [W/m2]'])],
   ];
 
   // header row
@@ -308,12 +334,12 @@ function generatePDF(row) {
   });
 
   // ── Chart ──────────────────────────────────────────────────────────────────
-  const Isc = parseFloat(row['Isc [A]']);
-  const Voc = parseFloat(row['Voc [V]']);
-  const Imp = parseFloat(row['Imp [A]']);
-  const Vmp = parseFloat(row['Vmp [V]']);
-  const Rsh = parseFloat(row['Rshunt [ohm]']);
-  const PMax = parseFloat(row['PMax [W]']);
+  const Isc  = sanitize(row['Isc [A]'],  0);
+  const Voc  = sanitize(row['Voc [V]'],  0);
+  const Imp  = sanitize(row['Imp [A]'],  0);
+  const Vmp  = sanitize(row['Vmp [V]'],  0);
+  const Rsh  = sanitize(row['Rshunt [ohm]'], 1000);
+  const PMax = sanitize(row['PMax [W]'], 0);
 
   const { V, I, P } = generateIV(Isc, Voc, Imp, Vmp, Rsh);
 
@@ -346,24 +372,28 @@ function generatePDF(row) {
     doc.line(plotX, gy, plotX + plotW, gy);
   }
 
-  const maxV = Voc * 1.05;
-  const maxI = Isc * 1.2;
-  const maxP = PMax * 1.3;
+  const maxV = (isFinite(Voc) && Voc > 0) ? Voc * 1.05 : 60;
+  const maxI = (isFinite(Isc) && Isc > 0) ? Isc * 1.2  : 20;
+  const maxP = (isFinite(PMax) && PMax > 0) ? PMax * 1.3 : 600;
 
   function toPlotX(v) { return plotX + (v / maxV) * plotW; }
   function toPlotIY(i) { return plotY + plotH - (i / maxI) * plotH; }
   function toPlotPY(p) { return plotY + plotH - (p / maxP) * plotH; }
 
+  function safeLine(doc, x1, y1, x2, y2) {
+    if ([x1,y1,x2,y2].every(isFinite)) doc.line(x1, y1, x2, y2);
+  }
+
   // P-V curve (green)
   doc.setDrawColor(46, 125, 50); doc.setLineWidth(0.7);
   for (let i = 1; i < V.length; i++) {
-    doc.line(toPlotX(V[i-1]), toPlotPY(P[i-1]), toPlotX(V[i]), toPlotPY(P[i]));
+    safeLine(doc, toPlotX(V[i-1]), toPlotPY(P[i-1]), toPlotX(V[i]), toPlotPY(P[i]));
   }
 
   // I-V curve (blue)
   doc.setDrawColor(26, 87, 153); doc.setLineWidth(0.7);
   for (let i = 1; i < V.length; i++) {
-    doc.line(toPlotX(V[i-1]), toPlotIY(I[i-1]), toPlotX(V[i]), toPlotIY(I[i]));
+    safeLine(doc, toPlotX(V[i-1]), toPlotIY(I[i-1]), toPlotX(V[i]), toPlotIY(I[i]));
   }
 
   // X axis ticks + labels
@@ -447,7 +477,7 @@ document.getElementById('gen-btn').addEventListener('click', async () => {
 
     for (let j = 0; j < batchRows.length; j++) {
       const row = batchRows[j];
-      const serial = (row.DUTSerial || `module_${start + j + 1}`).replace(/[\/\\ ]/g, '_');
+      const serial = (row.DUTSerial || `module_${start + j + 1}`).replace(/[\/\\.\\s<>:"|?*]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
       const doc = generatePDF(row);
       zip.file(`${serial}.pdf`, doc.output('arraybuffer'));
 
